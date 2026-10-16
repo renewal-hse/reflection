@@ -316,6 +316,11 @@ textarea::placeholder{color:var(--ink-3)}
   function tgv(v) { try { return inTg && typeof tg.isVersionAtLeast === 'function' && tg.isVersionAtLeast(v); } catch (e) { return false; } }
 
   if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+
+  /* test mode: ?test=1 pretends today is the next session day; ?test=2026-11-21 sets the date. Test entries are stored apart from real ones. */
+  var QS = (function () { try { return new URLSearchParams(location.search); } catch (e) { return null; } })();
+  var TEST = !!(QS && QS.has('test'));
+  var TEST_DATE = TEST && /^\d{4}-\d{2}-\d{2}$/.test(QS.get('test') || '') ? QS.get('test') : null;
   if (tgv('6.1')) { document.documentElement.classList.add('tg-back'); }
 
   function applyTheme() {
@@ -340,8 +345,8 @@ textarea::placeholder{color:var(--ink-3)}
   }
 
   /* ---------- storage: Telegram cloud, then this browser, then memory ---------- */
-  var PREFIX = 'rf_';
-  var LS_KEY = 'rf_entries_v1';
+  var PREFIX = TEST ? 'rft_' : 'rf_';
+  var LS_KEY = TEST ? 'rft_entries_v1' : 'rf_entries_v1';
   var Store = {
     mode: 'memory',
     mem: {},
@@ -398,6 +403,23 @@ textarea::placeholder{color:var(--ink-3)}
           return Promise.resolve(true);
         } catch (e) { return Promise.reject(e); }
       }
+      return Promise.resolve(true);
+    },
+    clearAll: function () {
+      var self = this;
+      this.mem = {};
+      if (this.mode === 'cloud') {
+        return new Promise(function (resolve) {
+          try {
+            tg.CloudStorage.getKeys(function (err, keys) {
+              keys = (keys || []).filter(function (k) { return k.indexOf(PREFIX) === 0; });
+              if (err || !keys.length) { resolve(true); return; }
+              tg.CloudStorage.removeItems(keys, function () { resolve(true); });
+            });
+          } catch (e) { resolve(false); }
+        });
+      }
+      if (this.mode === 'local') { try { localStorage.removeItem(LS_KEY); } catch (e) {} }
       return Promise.resolve(true);
     }
   };
@@ -485,11 +507,20 @@ textarea::placeholder{color:var(--ink-3)}
     return 'rgb(' + pa.map(function (v, i) { return Math.round(v + (pb[i] - v) * t); }).join(',') + ')';
   }
 
-  function todayISO() {
-    var o = settings().today_override;
-    if (o && /^\d{4}-\d{2}-\d{2}$/.test(o)) return o;
+  function realToday() {
     var d = new Date();
     return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+  function todayISO() {
+    if (TEST) {
+      if (TEST_DATE) return TEST_DATE;
+      var rt = realToday();
+      var next = sessions().filter(function (s) { return s.date >= rt; })[0];
+      return next ? next.date : rt;
+    }
+    var o = settings().today_override;
+    if (o && /^\d{4}-\d{2}-\d{2}$/.test(o)) return o;
+    return realToday();
   }
   function entryOf(id) { return S.entries[id]; }
   function hasEntry(id) {
@@ -595,7 +626,7 @@ textarea::placeholder{color:var(--ink-3)}
 
     var band = '<header class="band"><div class="wrap band-inner">' +
       '<div class="logos">' + logos() + '</div>' +
-      '<p class="eyebrow">Дневник рефлексии</p>' +
+      '<p class="eyebrow">Дневник рефлексии' + (TEST ? ' · тестовый режим' : '') + '</p>' +
       '<h1 class="greet">' + greeting() + (name ? ', ' + esc(name) : '') + '</h1>' +
       '<p class="program">' + esc(p.title || '') + (p.cohort ? ' · ' + esc(p.cohort) : '') + '</p>' +
       quoteBlock() +
@@ -745,7 +776,9 @@ textarea::placeholder{color:var(--ink-3)}
       memory: 'Записи не сохранятся после закрытия страницы: браузер не даёт доступа к хранилищу.'
     }[Store.mode];
     var demo = settings().demo_mode ? '<p>Демо-режим: записи-примеры загружены из data.json.</p>' : '';
-    return '<footer class="foot"><p>' + where + '</p>' + demo + '</footer>';
+    var test = TEST ? '<p>Тестовый режим: «сегодня» подставлено как ' + fmtLong(todayISO()) + '. Тестовые записи хранятся отдельно от настоящих.</p>' +
+      '<button class="link" style="align-self:flex-start" data-act="clear-test">' + (S.clearArmed ? 'Нажмите ещё раз, чтобы удалить' : 'Удалить тестовые записи') + '</button>' : '';
+    return '<footer class="foot"><p>' + where + '</p>' + demo + test + '</footer>';
   }
 
   function renderFlow() {
@@ -1042,6 +1075,18 @@ textarea::placeholder{color:var(--ink-3)}
     else if (act === 'prev' || act === 'back') back();
     else if (act === 'home') go('home', {});
     else if (act === 'retry') boot();
+    else if (act === 'clear-test' && TEST) {
+      var y = window.scrollY;
+      if (!S.clearArmed) { S.clearArmed = true; render(); window.scrollTo(0, y); return; }
+      S.clearArmed = false;
+      Store.clearAll().then(function () {
+        S.entries = {};
+        haptic('success');
+        toast('Тестовые записи удалены');
+        render();
+        window.scrollTo(0, 0);
+      });
+    }
   });
   app.addEventListener('input', function (ev) {
     if (ev.target && ev.target.id === 'answer') {
